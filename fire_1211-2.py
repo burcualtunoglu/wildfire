@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 
 # 1) Excel'i okuyun (sizin klasörünüz)
-excel_path = r"C:\Users\Mert\deprem\wildfire\inputs_to_load-5x5_burcu.xlsx"
+excel_path = r"C:\Users\baltunoglu\PycharmProjects\fire\inputs_to_load-5x5_yyo.xlsx"
 
 data = load_inputs(excel_path)   # tüm set/parametreler burada
 # print(demo_print_summary(data))  # hızlı bütünlük kontrolü (opsiyonel)
@@ -30,7 +30,7 @@ su=data["su"]
 
 d = compute_d_param(coords, speed_km_per_min=3.83, K=K)
 
-Na = [i for i in N if i in {3,6,9}]
+Na = [i for i in N if i in {3,6,9,12,15,18,21,24}]
 e = {i: (1 if i in Na else 0) for i in N}
 
 # omega = {i: 581152 for i in N}  #km2 başına 36322 litre 16 km2 alan için 581152 litre su gerekli
@@ -66,16 +66,30 @@ m.addConstrs(( p[i] <= pi[i] -beta[i]*(tc[i]-ts[i]) for i in N),
 m.addConstrs(( p[i] <= pi[i]*(u_pre[i]+u_post[i]+1-y[i]) for i in N),
     name="cons 3")
 
-# m.addConstrs((omega[i]==su[i]*(tc[i]-ts[i]) for i in N),name="cons 4")
+# for i in N:
+# #     # min kılıfı
+# #     for k in K:
+# #         m.addConstr(a[i] <= v[i,k] + M*(1 - x[i,k]), name=f"alpha_up[{i},{k}]")
+# #         m.addConstr(a[i] >= v[i,k] - M*(1 - x[i,k]), name=f"alpha_lo[{i},{k}]")
+#     m.addConstr(omega[i] <= su[i] * (a[i] - ts[i]), name=f"water_def_arrival[{i}]")
 
+delta = m.addVars(N, K, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, name="delta")
+
+# delta_{i,k} tanımı: delta[i,k] = v[i,k] - ts[i]
 for i in N:
-    # min kılıfı
     for k in K:
-        m.addConstr(a[i] <= v[i,k] + M*(1 - x[i,k]), name=f"alpha_up[{i},{k}]")
-        m.addConstr(a[i] >= v[i,k] - M*(1 - x[i,k]), name=f"alpha_lo[{i},{k}]")
-    m.addConstr(omega[i] == su[i] * (a[i] - ts[i]), name=f"water_def_arrival[{i}]")
-    m.addConstr(tc[i] >= a[i], name=f"ctrl_after_arrival[{i}]")
+        m.addConstr(
+            delta[i, k] == su[i] *(v[i, k] - ts[i]),
+            name=f"delta_def[{i},{k}]"
+        )
 
+# omega_i = min_k delta_{i,k}
+for i in N:
+    m.addGenConstrMax(
+        omega[i],
+        [delta[i, k] for k in K],
+        name=f"omega_min[{i}]"
+    )
 
 
 # A) su talebi – u_pre/u_post’a bağla
@@ -88,11 +102,27 @@ for i in N:
         (s[i, k] <= M * (u_pre[i] + u_post[i]) for k in K),
         name=f"no_water_if_no_control[{i}]"
     )
+# for i in N:
+#     m.addGenConstrIndicator(u_pre[i], 1,
+#         gp.quicksum(mu[k]*s[i,k] for k in K) >= omega[i], name=f"dem_suppress_pre[{i}]")
+#     m.addGenConstrIndicator(u_post[i], 1,
+#         gp.quicksum(mu[k]*s[i,k] for k in K) >= omega[i], name=f"dem_suppress_post[{i}]")
+#     m.addConstr(gp.quicksum(s[i,k] for k in K) <= (omega[i]/max(mu.values())) * (u_pre[i]+u_post[i]),
+#                 name=f"no_water_if_no_control[{i}]")
+
 
 for i in N:
     for k in K:
-        m.addGenConstrIndicator(x[i, k], 1,
-                                v[i, k] == t[i, k] + d[i, k], name="5a")
+        # x[i,k] = 1 ise: v[i,k] = t[i,k] + d[i,k]
+        m.addConstr(
+            v[i, k] >= t[i, k] + d[i, k] - M * (1 - x[i, k]),
+            name=f"v_eq_td_lo[{i},{k}]"
+        )
+        m.addConstr(
+            v[i, k] <= t[i, k] + d[i, k] + M * (1 - x[i, k]),
+            name=f"v_eq_td_up[{i},{k}]"
+        )
+
 
 m.addConstrs((t[i,k]+s[i,k] +v[i,k]<=M*x[i,k] for i in N for k in K),
     name="cons 5")
@@ -120,7 +150,7 @@ m.addConstrs((gp.quicksum(x[i,k] for i in N) <= 1 for k in K ),
 m.addConstrs((tc[i]<=te[i] for i in N ),
     name="cons 12")
 
-m.addConstrs((tc[i]>=ts[i] - M*(1-u_post[i]-u_pre[i]) for i in N ),
+m.addConstrs((tc[i]>=a[i] - M*(1-u_post[i]-u_pre[i]) for i in N ),
     name="cons 13")
 
 m.addConstrs((tc[i]<=M*(u_post[i]+u_pre[i]) for i in N ),
@@ -230,7 +260,7 @@ def _read_params(excel_inputs):
 def write_results_to_excel(model: gp.Model,
                            vars_dict: dict,
                            excel_inputs_path,                # <-- yeni: girdi dosyası (adı için ve parametre okumak için)
-                           out_dir=r"C:\Users\Mert\deprem\wildfire\result",
+                           out_dir=r"C:\Users\baltunoglu\PycharmProjects\fire\result",
                            file_prefix="results"):
 
     if model.Status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL, GRB.TIME_LIMIT, GRB.INTERRUPTED):
@@ -337,8 +367,8 @@ vars_dict = {
 out_file = write_results_to_excel(
     model=m,
     vars_dict=vars_dict,
-    excel_inputs_path=r"C:\Users\Mert\deprem\wildfire\inputs_to_load-5x5_burcu.xlsx",
-    out_dir=r"C:\Users\Mert\deprem\wildfire\result",
+    excel_inputs_path=r"C:\Users\baltunoglu\PycharmProjects\fire\inputs_to_load-5x5_yyo.xlsx",
+    out_dir=r"C:\Users\baltunoglu\PycharmProjects\fire\result",
     file_prefix="results"
 )
 
@@ -352,7 +382,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Excel dosya yolu
-excel_path = r"C:\Users\Mert\deprem\wildfire\inputs_to_load-5x5_burcu.xlsx"
+excel_path = r"C:\Users\baltunoglu\PycharmProjects\fire\inputs_to_load-5x5_yyo.xlsx"
 
 # Çıktı klasörü
 out_dir = Path("maps")
@@ -429,9 +459,9 @@ from datetime import datetime
 import textwrap
 
 # === YOLLAR ===
-excel_inputs = r"C:\Users\Mert\deprem\wildfire\inputs_to_load-5x5_burcu.xlsx"
-results_dir = Path(r"C:\Users\Mert\deprem\wildfire\result") # sonuç xlsx'lerin olduğu klasör
-out_dir      = Path(r"C:\Users\Mert\deprem\wildfire\maps")
+excel_inputs = r"C:\Users\baltunoglu\PycharmProjects\fire\inputs_to_load-5x5_yyo.xlsx"
+results_dir = Path(r"C:\Users\baltunoglu\PycharmProjects\fire\result") # sonuç xlsx'lerin olduğu klasör
+out_dir      = Path(r"C:\Users\baltunoglu\PycharmProjects\fire\maps")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 # === BAŞLANGIÇ YANGINLARI (Na) ===
