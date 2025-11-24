@@ -30,7 +30,7 @@ su=data["su"]
 
 d = compute_d_param(coords, speed_km_per_min=3.83, K=K)
 
-Na = [i for i in N if i in {3,6,9,12,15,18,21,24}]
+Na = [i for i in N if i in {3,6,9,12,15}]
 e = {i: (1 if i in Na else 0) for i in N}
 
 # omega = {i: 581152 for i in N}  #km2 başına 36322 litre 16 km2 alan için 581152 litre su gerekli
@@ -38,6 +38,7 @@ mu_default = 1667  # birim: litre/dakika
 mu = {k: mu_default for k in K}
 
 M = 1e6
+OMEGA_MAX =908050
 epsilon = 1e-12
 # 2) Gurobi modeli (örnek iskelet)
 m = gp.Model("wildfire_model")
@@ -56,7 +57,7 @@ t = m.addVars(N, K, vtype=GRB.CONTINUOUS, lb=0, name="t")   # t_ik ≥ 0 : dispa
 s = m.addVars(N, K, vtype=GRB.CONTINUOUS, lb=0, name="s")  # s_ik ≥ 0 : processing (suppression) duration of team k at node i
 z = m.addVars(N, N, vtype=GRB.BINARY, name="z")   # z_ij ∈ {0,1} : fire spreads from node i to node j
 q = m.addVars(N, N, vtype=GRB.BINARY, name="q")  # q_ij ∈ {0,1} : fire at node j ignited by node i
-omega = m.addVars(N,  vtype=GRB.CONTINUOUS, name="omega")  # w_i ≥ 0 :the required water for node i
+omega = m.addVars(N,  vtype=GRB.CONTINUOUS,lb=0.0, name="omega")  # w_i ≥ 0 :the required water for node i
 v=m.addVars(N,K, vtype=GRB.CONTINUOUS, lb=0, name="v")  # v_ik ≥ 0 :arrival time of team k at node i
 a = m.addVars(N,  vtype=GRB.CONTINUOUS, name="a")   #ilk varış zamanı = min_k v[i,k] (yalnızca atanmış k'lar arasında)
 
@@ -66,30 +67,72 @@ m.addConstrs(( p[i] <= pi[i] -beta[i]*(tc[i]-ts[i]) for i in N),
 m.addConstrs(( p[i] <= pi[i]*(u_pre[i]+u_post[i]+1-y[i]) for i in N),
     name="cons 3")
 
-# for i in N:
-# #     # min kılıfı
-# #     for k in K:
-# #         m.addConstr(a[i] <= v[i,k] + M*(1 - x[i,k]), name=f"alpha_up[{i},{k}]")
-# #         m.addConstr(a[i] >= v[i,k] - M*(1 - x[i,k]), name=f"alpha_lo[{i},{k}]")
-#     m.addConstr(omega[i] <= su[i] * (a[i] - ts[i]), name=f"water_def_arrival[{i}]")
 
-delta = m.addVars(N, K, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, name="delta")
+delta = m.addVars(N, K, vtype=GRB.CONTINUOUS, lb=0.0, name="delta")
 
-# delta_{i,k} tanımı: delta[i,k] = v[i,k] - ts[i]
+
+
 for i in N:
     for k in K:
+        # x[i,k] = 1 iken: delta[i,k] = su[i]*(v[i,k] - ts[i])
+        # x[i,k] = 0 iken: delta[i,k] = 0
+
         m.addConstr(
-            delta[i, k] == su[i] *(v[i, k] - ts[i]),
-            name=f"delta_def[{i},{k}]"
+            delta[i, k] >= su[i] * (v[i, k] - ts[i]) - M * (1 - x[i, k]),
+            name=f"delta_lo[{i},{k}]"
+        )
+#         m.addConstr(
+#             delta[i, k] <= su[i] * (v[i, k] - ts[i]) + M * (1 - x[i, k]),
+#             name=f"delta_up[{i},{k}]"
+#         )
+        # # Atama yoksa (x=0) delta[i,k] <= 0, lb=0 olduğu için delta[i,k]=0
+        # m.addConstr(
+        #     delta[i, k] <= OMEGA_MAX * x[i, k],
+        #     name=f"delta_cap[{i},{k}]"
+        # )
+
+# OMEGA_MAX zaten yukarıda omega ve delta için kullandığınız güvenli üst sınır
+
+# # omega_i = max_k delta_{i,k} (sadece atanmış ekiplerin etkisi)
+# for i in N:
+#     m.addGenConstrMax(
+#         omega[i],
+#         [delta[i, k] for k in K],
+#         name=f"omega_max[{i}]"
+#     )
+z_max  = m.addVars(N, K, vtype=GRB.BINARY,     name="z_max")
+
+
+# --- 2) omega[i] = max_{k:x[i,k]=1} delta[i,k] ---
+
+for i in N:
+    for k in K:
+        # (a) omega[i] tüm delta[i,k]'lerin ÜSTÜNDE olsun
+        #     (atanmış olmayan ekipler için delta = 0 zaten)
+        m.addConstr(
+            omega[i] >= delta[i, k],
+            name=f"omega_ge_delta[{i},{k}]"
         )
 
-# omega_i = min_k delta_{i,k}
-for i in N:
-    m.addGenConstrMax(
-        omega[i],
-        [delta[i, k] for k in K],
-        name=f"omega_min[{i}]"
+        # (b) z_max[i,k] = 1 ise: omega[i] ≤ delta[i,k]
+        m.addConstr(
+            omega[i] <= delta[i, k] + OMEGA_MAX * (1 - z_max[i, k]),
+            name=f"omega_le_delta_plusM[{i},{k}]"
+        )
+
+        # (c) z_max sadece atanmış ekipler arasından seçilebilir
+        m.addConstr(
+            z_max[i, k] <= x[i, k],
+            name=f"zmax_le_x[{i},{k}]"
+        )
+
+    # (d) Kontrol fazı aktifse (u_pre+u_post = 1) tam BİR ekip seç,
+    #     aktif değilse (0) hiç ekip seçme.
+    m.addConstr(
+        gp.quicksum(z_max[i, k] for k in K) == u_pre[i] + u_post[i],
+        name=f"zmax_sum[{i}]"
     )
+
 
 
 # A) su talebi – u_pre/u_post’a bağla
@@ -102,14 +145,6 @@ for i in N:
         (s[i, k] <= M * (u_pre[i] + u_post[i]) for k in K),
         name=f"no_water_if_no_control[{i}]"
     )
-# for i in N:
-#     m.addGenConstrIndicator(u_pre[i], 1,
-#         gp.quicksum(mu[k]*s[i,k] for k in K) >= omega[i], name=f"dem_suppress_pre[{i}]")
-#     m.addGenConstrIndicator(u_post[i], 1,
-#         gp.quicksum(mu[k]*s[i,k] for k in K) >= omega[i], name=f"dem_suppress_post[{i}]")
-#     m.addConstr(gp.quicksum(s[i,k] for k in K) <= (omega[i]/max(mu.values())) * (u_pre[i]+u_post[i]),
-#                 name=f"no_water_if_no_control[{i}]")
-
 
 for i in N:
     for k in K:
@@ -201,12 +236,9 @@ m.addConstrs(( te[i] == tm[i] + alpha / ameliorate[i] for i in N ),
 # objective function
 m.setObjective(gp.quicksum(p[i] for i in N), GRB.MAXIMIZE)
 
-
+# m.setParam("MIPGap", 0.00925)
 # --- Optimize et ---
 m.optimize()
-
-# --- INF_OR_UNBD ise bir kez daha dene (çoğu kez ayrışır) ---
-
 
 # -*- coding: utf-8 -*-
 from pathlib import Path
@@ -345,6 +377,7 @@ def write_results_to_excel(model: gp.Model,
             "z": ("z", ("i", "j"), "z_ij"),
             "q": ("q", ("i", "j"), "q_ij"),
             "v": ("v", ("i", "k"), "v_ik"),
+            "delta": ("delta", ("i", "k"), "delta_ik"),
         }.items():
             if name in vars_dict and vars_dict[name] is not None:
                 df = _double_index_to_df(vars_dict[name], idx_names, colname)
@@ -361,6 +394,8 @@ vars_dict = {
     "omega": omega,   # tek indeksli: i ↦ omega_i
     "v": v,           # çift indeksli: (i,k) ↦ v_ik
     "a": a,
+    "delta": delta,   # çift indeksli: (i,k) ↦ delta_ik
+
     # "a": a, "b": b, "c": c,
 }
 
