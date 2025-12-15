@@ -221,64 +221,30 @@ def load_inputs(
 #             d[(i, k)] = thour
 #     return d
 
-def distribute_vehicles_to_bases(K: list, bases: dict) -> dict:
-    """
-    Araç listesini (K) verilen üslere (bases) eşit parçalar halinde dağıtır.
-    Dönüş: {Araç_ID: 'Üs_Adı'} formatında sözlük.
-    """
-    base_names = list(bases.keys())
-    num_bases = len(base_names)
-    num_vehicles = len(K)
-
-    if num_bases == 0:
-        raise ValueError("Hiç üs (base) tanımlanmamış!")
-
-    assignments = {}
-
-    # Basit bir "chunking" (dilimleme) algoritması
-    # Örnek: 100 araç, 3 üs -> 33, 33, 34 şeklinde dağılır.
-    # q = taban sayı, r = fazlalık
-    q, r = divmod(num_vehicles, num_bases)
-
-    start_idx = 0
-    for i, base_name in enumerate(base_names):
-        # İlk 'r' kadar üs bir tane fazla araç alır (eşit dağılım için)
-        count = q + 1 if i < r else q
-
-        # O aralıktaki araçları seç
-        assigned_vehicles = K[start_idx: start_idx + count]
-
-        # Sözlüğe işle
-        for vehicle_id in assigned_vehicles:
-            assignments[vehicle_id] = base_name
-
-        start_idx += count
-
-    return assignments
-
-
-def compute_d_param_multibase(
-        coords: dict,
+def compute_d_param(
+        coords: Dict[int, Tuple[float, float]],
         speed_km_per_hour: float,
-        K: list,
-        base_locations: dict,
-        vehicle_assignments: dict
-) -> dict:
-    d = {}
-    for k in K:
-        # Aracın atandığı üssü bul
-        base_name = vehicle_assignments[k]
-        bx, by = base_locations[base_name]
+        K: List[int]
+) -> Dict[Tuple[int, int], float]:
+    """
+    d[i,k] = (0,0) referansından düğüm i'ye Manhattan metriği ile hesaplanan
+    tek yön seyahat süresi (SAAT).
+    Matematiksel Model:
+    Mesafe (Manhattan) = |x| + |y|
+    Süre (Saat) = Mesafe / Hız
+    """
+    d: Dict[Tuple[int, int], float] = {}
 
-        for i, (Nx, Ny) in coords.items():
-            # Manhattan Mesafesi
-            dist_km = abs(Nx - bx) + abs(Ny - by)
+    for i, (x, y) in coords.items():
+        # Manhattan Uzaklığı (L1 Norm): |x| + |y|
+        # Referans noktası (0,0) olduğu için (x-0) ve (y-0) işlemine gerek yoktur.
+        manhattan_dist_km = abs(x) + abs(y)
 
-            # Süre (Saat)
-            if speed_km_per_hour > 0:
-                t_hour = dist_km / speed_km_per_hour
-            else:
-                t_hour = float('inf')
+        # Sürenin hesaplanması (Saat cinsinden)
+        # t = x / v
+        t_hour = manhattan_dist_km / speed_km_per_hour
 
+        for k in K:
             d[(i, k)] = t_hour
+
     return d
