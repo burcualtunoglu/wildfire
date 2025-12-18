@@ -221,113 +221,64 @@ def load_inputs(
 #             d[(i, k)] = thour
 #     return d
 
-def distribute_vehicles_priority(K: list, bases: dict) -> dict:
+def distribute_vehicles_to_bases(K: list, bases: dict) -> dict:
     """
-    ÖZEL DAĞITIM KURALI:
-    1. 'Base A' için sabit 5 araç ayrılır.
-    2. Geriye kalan araçlar diğer üslere eşit dağıtılır.
+    Araç listesini (K) verilen üslere (bases) eşit parçalar halinde dağıtır.
+    Dönüş: {Araç_ID: 'Üs_Adı'} formatında sözlük.
     """
-    target_base = "A"
-    target_count = 6
+    base_names = list(bases.keys())
+    num_bases = len(base_names)
+    num_vehicles = len(K)
 
-    if target_base not in bases:
-        raise ValueError(f"'{target_base}' isimli üs, bases sözlüğünde bulunamadı!")
-
-    # Yeterli araç var mı kontrolü
-    if len(K) < target_count:
-        raise ValueError(f"Toplam araç sayısı ({len(K)}), Base A için istenen ({target_count}) sayısından az!")
+    if num_bases == 0:
+        raise ValueError("Hiç üs (base) tanımlanmamış!")
 
     assignments = {}
 
-    # 1. Aşama: Base A'ya ilk 5 aracı ata
-    base_a_vehicles = K[:target_count]
-    for k in base_a_vehicles:
-        assignments[k] = target_base
+    # Basit bir "chunking" (dilimleme) algoritması
+    # Örnek: 100 araç, 3 üs -> 33, 33, 34 şeklinde dağılır.
+    # q = taban sayı, r = fazlalık
+    q, r = divmod(num_vehicles, num_bases)
 
-    # 2. Aşama: Kalan araçları diğer üslere dağıt
-    remaining_vehicles = K[target_count:]
-    other_base_names = [b for b in bases.keys() if b != target_base]
+    start_idx = 0
+    for i, base_name in enumerate(base_names):
+        # İlk 'r' kadar üs bir tane fazla araç alır (eşit dağılım için)
+        count = q + 1 if i < r else q
 
-    if not other_base_names and remaining_vehicles:
-        # Eğer başka üs yoksa ama araç arttıysa, onları da mecburen Base A'ya verelim
-        # Veya senaryonuza göre hata fırlatılabilir.
-        for k in remaining_vehicles:
-            assignments[k] = target_base
-    elif remaining_vehicles:
-        # Standart chunking (dilimleme) algoritması
-        num_others = len(other_base_names)
-        q, r = divmod(len(remaining_vehicles), num_others)
+        # O aralıktaki araçları seç
+        assigned_vehicles = K[start_idx: start_idx + count]
 
-        start_idx = 0
-        for i, b_name in enumerate(other_base_names):
-            count = q + 1 if i < r else q
-            # İlgili dilimi al
-            subset = remaining_vehicles[start_idx: start_idx + count]
-            for k_sub in subset:
-                assignments[k_sub] = b_name
-            start_idx += count
+        # Sözlüğe işle
+        for vehicle_id in assigned_vehicles:
+            assignments[vehicle_id] = base_name
+
+        start_idx += count
 
     return assignments
 
 
-def generate_vehicle_params(vehicle_assignments: dict) -> Tuple[Dict[int, float], Dict[int, float]]:
-    """
-    Araçların atandığı üsse göre Kapasite (mu) ve Hız parametrelerini üretir.
-
-    Kurallar:
-    - Base A: Hız = 120 km/s, Mu = 10000 lt (Helikopter)
-    - Diğer : Hız = 50 km/s,  Mu = 2500 lt  (Kara Aracı)
-    """
-    mu = {}
-    speed = {}
-
-    for k, base in vehicle_assignments.items():
-        if base == "A":
-            speed[k] = 120.0
-            mu[k] = 10000.0
-        else:
-            speed[k] = 50.0
-            mu[k] = 2500.0
-
-    return mu, speed
-
-
-def compute_d_param_variable(
+def compute_d_param_multibase(
         coords: dict,
-        speed_dict: Dict[int, float],  # Değişiklik: Tek float yerine sözlük alıyor
+        speed_km_per_hour: float,
         K: list,
         base_locations: dict,
         vehicle_assignments: dict
 ) -> dict:
-    EUCLIDEAN_BASE_NAME = "A"
     d = {}
-
     for k in K:
+        # Aracın atandığı üssü bul
         base_name = vehicle_assignments[k]
         bx, by = base_locations[base_name]
 
-        # Aracın hızı (önceden hesapladığımız sözlükten)
-        v_k = speed_dict.get(k, 0.001)  # 0'a bölme hatası olmasın diye default küçük değer
-
         for i, (Nx, Ny) in coords.items():
-            dx = Nx - bx
-            dy = Ny - by
+            # Manhattan Mesafesi
+            dist_km = abs(Nx - bx) + abs(Ny - by)
 
-            # MESAFE HESABI
-            if base_name == EUCLIDEAN_BASE_NAME:
-                # Helikopter -> Kuş uçuşu
-                dist_km = math.hypot(dx, dy)
-            else:
-                # Kara Aracı -> Manhattan
-                dist_km = abs(dx) + abs(dy)
-
-            # SÜRE HESABI (Saat)
-            # t = Yol / Hız
-            if v_k > 0:
-                t_hour = dist_km / v_k
+            # Süre (Saat)
+            if speed_km_per_hour > 0:
+                t_hour = dist_km / speed_km_per_hour
             else:
                 t_hour = float('inf')
 
             d[(i, k)] = t_hour
-
     return d
